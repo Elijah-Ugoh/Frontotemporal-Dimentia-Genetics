@@ -13,7 +13,7 @@ The containerized version is used and pulled from Docker hub (This is necessary 
 
 NB: The version of GATK used can be changed. At the time of this work, v/4.6.2.0 was used. 
 
-### 
+### Pre-processing of BAM files
 - The variant discovery process starts with a prelimary preprocessing of the the data. The raw FASTQ file per sample has been cleaned and the sequence reads mapped to the reference genome to produce files in BAM format and sorted by coordinates (.bai files). 
 - Next, GATK best practices recommend marking duplicates to mitigate biases introduced by data generation steps such as PCR amplification. This has been performed on the data.
 
@@ -26,14 +26,14 @@ For hg38, we used Homo_sapiens_assembly38.dbsnp138.vcf.gz from dbSNP and Mills +
 mkdir GATK_Analysis
 mkdir GATK_Anlayis/BaseRecalibrator
 mkdir GATK_Anlayis/BaseRecalibrator/recal_data
-
-
 ```
+## Generate VCF Files
 
 
-## SNP
 
-## Annotation in Ensemble Variant Effect Predictor (VEP)
+## SNV and Indel Variant Discovery
+
+### Annotation in Ensemble Variant Effect Predictor (VEP)
 [VEP](https://genomebiology.biomedcentral.com/articles/10.1186/s13059-016-0974-4) determines the effect of variants (SNPs, insertions, deletions, CNVs or structural variants) on genes, transcripts, and protein sequence, as well as regulatory regions.
 
 The command line version  of VEP is used locally, as it is faster and extendable. [Installation instructions](https://www.ensembl.org/info/docs/tools/vep/index.html) are below:
@@ -267,14 +267,24 @@ for bam in STR_analysis_results/*.bam; do
   samtools index "$sorted_bam"
 done
 ```
-REViewer can then be run to generate .html files, which can be viewed in a browser.
+Because of contig naming inconsitency with different reference genome databses, REViewer may return an error. To prevent this, a compatible hg38 database if downloaded from GATK's Google Cloud Bucket of [useful human genomic resources](https://console.cloud.google.com/storage/browser/genomics-public-data/resources/broad/hg38/v0/). 
+
 ```bash
-for realigned_bam in STR_analysis_results/*_realigned.bam; do
-  sample_name=$(basename "$realigned_bam" _realigned.bam)
+wget https://console.cloud.google.com/storage/browser/_details/genomics-public-data/resources/broad/hg38/v0/Homo_sapiens_assembly38.dict?inv=1&invt=Ab0XXQ
+wget https://console.cloud.google.com/storage/browser/_details/genomics-public-data/resources/broad/hg38/v0/Homo_sapiens_assembly38.fasta?inv=1&invt=Ab0XXQ
+wget https://console.cloud.google.com/storage/browser/_details/genomics-public-data/resources/broad/hg38/v0/Homo_sapiens_assembly38.fasta.fai?inv=1&invt=Ab0XXQ
+```
+
+REViewer can then be run to generate .svg files, which can be viewed in a browser.
+```bash
+# standing in the genetic_analysis dir
+
+for realigned_bam in STR_analysis_results/*_realigned_sorted.bam; do
+  sample_name=$(basename "$realigned_bam" _realigned_sorted.bam)
   ./REViewer-v0.2.7-linux_x86_64 \
     --reads "$realigned_bam" \
     --vcf "STR_analysis_results/${sample_name}.vcf" \
-    --reference vep_data/homo_sapiens/113_GRCh38/Homo_sapiens.GRCh38.dna.toplevel.fa.gz \
+    --reference resources_broad_hg38_v0_Homo_sapiens_assembly38.fasta \
     --catalog ExpansionHunter-v5.0.0-linux_x86_64/variant_catalog/hg38/variant_catalog.json \
     --locus C9ORF72 \
     --output-prefix "REV_outputs/${sample_name}"
