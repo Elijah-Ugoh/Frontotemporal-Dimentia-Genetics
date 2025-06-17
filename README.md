@@ -2,6 +2,36 @@
 
 This is a short pipeline that analyzes short reads whole-genome sequencing data from Fronto-temporal Dimentia (FTD) patients, starting with quality control to remove poor quality reads, mapping to a reference geneome, variant calling, annotation, and candidate variant filtering. 
 
+## Starting with Installing GATK
+The containerized version is used and pulled from Docker hub (This is necessary since we want to run GATK in a Docker container within a cluster).
+- First, Docker Engine is installed and started by following the guide [here](https://docs.docker.com/engine/install/ubuntu/).
+  - Confirm Docker Engine was properly installed and ready for use: ```docker --version```.
+- Next, GATK is installed by following the install guide [here](https://gatk.broadinstitute.org/hc/en-us/articles/360035889991--How-to-Run-GATK-in-a-Docker-container) for the containerized version of the toolkit.
+- Convert the pulled Docker image to Singularity for use on the cluster. ```singularity build gatk_4.6.2.0.sif docker://broadinstitute/gatk:4.6.2.0``` (requires Singualrity to be installed).
+  - ```sudo apt update && sudo apt install singularity-container```. 
+  - Confirm all is fine afterwards ```singularity exec gatk_4.6.2.0.sif gatk --help```
+
+NB: The version of GATK used can be changed. At the time of this work, v/4.6.2.0 was used. 
+
+### 
+- The variant discovery process starts with a prelimary preprocessing of the the data. The raw FASTQ file per sample has been cleaned and the sequence reads mapped to the reference genome to produce files in BAM format and sorted by coordinates (.bai files). 
+- Next, GATK best practices recommend marking duplicates to mitigate biases introduced by data generation steps such as PCR amplification. This has been performed on the data.
+
+- Finally, we re-calibrate the base quality scores (BQSR), as the variant calling process relies heavily on the quality scores assigned to the individual base calls in each sequence read to produce the best quality results.
+- - GATK recommends using common, validated polymorphic sites for BQSR to mask true variants (so GATK doesn’t mistakenly treat them as errors).
+
+For hg38, we used Homo_sapiens_assembly38.dbsnp138.vcf.gz from dbSNP and Mills + 1000G indels, both downloadable from [Genomics Public Data](https://console.cloud.google.com/storage/browser/genomics-public-data/resources/broad/hg38/v0/).
+
+```bash
+mkdir GATK_Analysis
+mkdir GATK_Anlayis/BaseRecalibrator
+mkdir GATK_Anlayis/BaseRecalibrator/recal_data
+
+
+```
+
+
+## SNP
 
 ## Annotation in Ensemble Variant Effect Predictor (VEP)
 [VEP](https://genomebiology.biomedcentral.com/articles/10.1186/s13059-016-0974-4) determines the effect of variants (SNPs, insertions, deletions, CNVs or structural variants) on genes, transcripts, and protein sequence, as well as regulatory regions.
@@ -67,9 +97,9 @@ tabix -p vcf vcf/landqvist.postVQSR.unfiltered.vcf.gz # Allows genomic coordinat
 ```
 
 In the actual annotation, we make use of multiple [VEP plugins](https://www.ensembl.org/info/docs/tools/vep/script/vep_plugins.html) to optimize the annotations. 
-Specifically, we use: CADD, dbNSFP, dbscSNV, NMD, SpliceAI. These plugins all have execution scipts, which are alaready installed in the containerized VEP download, but the required  plugin files must be downloaded also. 
+Specifically, we use: CADD, dbNSFP, dbscSNV, NMD, SpliceAI. These plugins all have execution scripts, which are alaready installed in the containerized VEP download, but the required  plugin files must be downloaded also. 
 
-Summary of all pluggins and usage:
+Summary of all plugins and usage:
 ------------------------------------
 | Plugin | Needs external data file             | Function | 
 |--------|--------------------------------------|----------| 
@@ -87,7 +117,7 @@ Summary of all pluggins and usage:
 ```bash
 # Navigate to the /mnt dir on wsl
 sudo mkdir /mnt/d
-sudo mount -t drvfs h: /mnt/h -o uid=$(id -u $USER),gid=$(id -g $USER),metadata
+sudo mount -t drvfs d: /mnt/d -o uid=$(id -u $USER),gid=$(id -g $USER),metadata
 sudo umount mnt/d # after use 
 ```
 
@@ -145,10 +175,108 @@ Summary pathogenicity thresholds applied.
 | **dbscSNV (splice)**    | `ada_score`, `rf_score`               | > 0.6 or > 0.8 often used                    | `ada_score > 0.6 and rf_score > 0.6`              |
 | **SpliceAI**            | `SpliceAI_DS_*`                       | Score > 0.5 recommended                      | `SpliceAI_DS_AG > 0.5 or SpliceAI_DS_AL > 0.5` etc. |
 
-Candidate variants and saved in a txt file and compared in databases like VarSome, ClinVar, UniProt, and gnomAD browser.
+Nominated candidate variants are saved in a txt file and compared in databases like VarSome, ClinVar, UniProt, and gnomAD browser.
+
+```bash
+bcftools query -f '%CHROM\t%POS\t%REF\t%ALT\t%INFO/CSQ\n' final_filtered.vcf.gz | awk -F '\t' '
+BEGIN {
+    OFS = "\t";
+    print "CHROM", "POS", "REF", "ALT", "rsid", "Consequence", "Impact", "Gene", "HGVSc", "HGVSp", "gnomADe_AF", "SIFT", "PolyPhen", "clinvar_clnsig", "CADD_PHRED"
+}
+{
+    split($5, transcripts, ",");
+    for (i in transcripts) {
+        split(transcripts[i], info, "|");
+        CHROM = $1;
+        POS = $2;
+        rsid = info[18];
+        REF = $3;
+        ALT = $4;
+        Consequence     = info[2];
+        Impact          = info[3];
+        Gene            = info[4]; HGVSc = info[11]; HGVSp = info[12]; gnomADe_AF = info[38];
+        SIFT            = info[34];
+        PolyPhen        = info[35];
+        clinvar_clnsig  = info[85]; CADD_PHRED = info[89];
+        print CHROM, POS, REF, ALT, rsid, Consequence, Impact, Gene, HGVSc, HGVSp, gnomADe_AF, SIFT, PolyPhen, clinvar_clnsig, CADD_PHRED;
+    }
+}' | uniq > gene_list.txt
+```
 
 This process can also be repeated using less stringent filters, such as a MAF of 5% instead of 1% and 0.3 for SpliceAI scores, etc. 
+The annotation can also be streamlined by supplying the --pick or --flag_pick flag in ```annotation.sh``` to tell VEP to report only the most deleterious or clinically significant transcript.  
 
 
+## Short Tandem Repeats Analysis
+ExpansionHunter is used to genotype the WGS data for STRs. This tool is designed for targeted genotyping of short tandem repeats and flanking variants. It operates by performing a targeted search through a BAM/CRAM file for reads that span, flank, and are fully contained in each repeat.
 
-To read: [ACMG Criteria](https://www.nature.com/articles/gim201530)
+ExpansionHunter requires the binary alignment/map (BAM) file. 
+
+Below, we install the ExpansionHunter tool by extracting the compield binary. 
+
+```bash
+# Download the compiled executable from GitHub into the project dir
+wget https://github.com/Illumina/ExpansionHunter/releases/download/v5.0.0/ExpansionHunter-v5.0.0-linux_x86_64.tar.gz
+tar -xzvf ExpansionHunter-v5.0.0-linux_x86_64.tar.gz # Extract the files
+
+# ExpansionHunter is now ready to use
+```
+The ```str_analysis.sh``` script is used to analyse the samples for repeat expansion units. 
+```bash
+# Finding Repeat Expansions.
+# All the sorted bam files are supplied as inputs. Exapnsion hunter returns a .vcf, .json, and a re-alinged bam file for each sample. 
+for bam in Data/bam/*.bam; do
+    sample_name=$(basename "$bam" .dedup.sorted.bam)
+
+    ./ExpansionHunter-v5.0.0-linux_x86_64/bin/ExpansionHunter \
+        --reads "$bam" \
+        --reference Homo_sapiens.GRCh38.dna.toplevel.fa.gz \
+        --variant-catalog ExpansionHunter-v5.0.0-linux_x86_64/variant_catalog/hg38/variant_catalog.json \
+        --output-prefix "STR_analysis_results/${sample_name}" \
+        --analysis-mode streaming \
+        --log-level info
+done
+```
+Summary information for nominated STR variants can be extracted from either the .json or .vcf outputs and saved to a txt file.
+
+```bash
+./extract_vcf.sh
+./summarize_C9ORF72.sh
+```
+### Inspecting the Read Alignments in Genomic Regions Containing Repeat Expansions
+The graph realigned reads output generated by ExpansionHunter can be further visualized in REViewer to  inspect the quality of the alignments of the reads used to genotype the repeat regions. REViewer was also developed by the authors of ExpansionHunter is a tool for visualizing alignments of reads in regions containing tandem repeats. 
+
+REViewer requires:
+- the BAMlet with graph-realigned reads generated by ExpansionHunter
+- the corresponding variant catalog used for the genotyping
+- VCF file generated by ExpansionHunter, and 
+- a FASTA file with reference genome (hg38)
+
+```bash
+# The Linux binary for the latest release of REViewer is download thus
+wget https://github.com/Illumina/REViewer/releases/download/v0.2.7/REViewer-v0.2.7-linux_x86_64.gz
+gunzip REViewer-v0.2.7-linux_x86_64.gz # Decompress the file
+```
+Usage:
+
+Sort and index the  the BAMlet generated by ExpansionHunter:
+```bash
+for bam in STR_analysis_results/*.bam; do
+  sorted_bam="${bam%.bam}_sorted.bam"
+  samtools sort "$bam" -o "$sorted_bam"
+  samtools index "$sorted_bam"
+done
+```
+REViewer can then be run to generate .html files, which can be viewed in a browser.
+```bash
+for realigned_bam in STR_analysis_results/*_realigned.bam; do
+  sample_name=$(basename "$realigned_bam" _realigned.bam)
+  ./REViewer-v0.2.7-linux_x86_64 \
+    --reads "$realigned_bam" \
+    --vcf "STR_analysis_results/${sample_name}.vcf" \
+    --reference vep_data/homo_sapiens/113_GRCh38/Homo_sapiens.GRCh38.dna.toplevel.fa.gz \
+    --catalog ExpansionHunter-v5.0.0-linux_x86_64/variant_catalog/hg38/variant_catalog.json \
+    --locus C9ORF72 \
+    --output-prefix "REV_outputs/${sample_name}"
+done
+```
