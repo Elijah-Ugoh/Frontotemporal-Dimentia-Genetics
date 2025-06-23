@@ -20,13 +20,69 @@ NB: The version of GATK used can be changed. At the time of this work, v/4.6.2.0
 - Finally, we re-calibrate the base quality scores (BQSR), as the variant calling process relies heavily on the quality scores assigned to the individual base calls in each sequence read to produce the best quality results.
 - - GATK recommends using common, validated polymorphic sites for BQSR to mask true variants (so GATK doesn’t mistakenly treat them as errors).
 
-For hg38, we used Homo_sapiens_assembly38.dbsnp138.vcf.gz from dbSNP and Mills + 1000G indels, both downloadable from [Genomics Public Data](https://console.cloud.google.com/storage/browser/genomics-public-data/resources/broad/hg38/v0/).
+For hg38, we used ```Homo_sapiens_assembly38.dbsnp138.vcf.gz``` from dbSNP and Mills + 1000G indels, both downloadable from GATK Cloud Bucket of useful [human genomic resources](https://console.cloud.google.com/storage/browser/genomics-public-data/resources/broad/hg38/v0/).
 
 ```bash
+mkdir known_sites && cd known_sites
+# Download the required files
+wget https://console.cloud.google.com/storage/browser/_details/genomics-public-data/resources/broad/hg38/v0/Mills_and_1000G_gold_standard.indels.hg38.vcf.gz?inv=1&invt=Ab0XXQ
+wget https://console.cloud.google.com/storage/browser/_details/genomics-public-data/resources/broad/hg38/v0/Mills_and_1000G_gold_standard.indels.hg38.vcf.gz.tbi?inv=1&invt=Ab0XXQ
+wget https://console.cloud.google.com/storage/browser/_details/genomics-public-data/resources/broad/hg38/v0/Homo_sapiens_assembly38.dbsnp138.vcf?inv=1&invt=Ab0XXQ
+wget https://console.cloud.google.com/storage/browser/_details/genomics-public-data/resources/broad/hg38/v0/Homo_sapiens_assembly38.dbsnp138.vcf.idx?inv=1&invt=Ab0XXQ
+```
+
+Because of contig naming inconsitency with different reference genome databses, tools like GATK and REViewer may return an error. To prevent this, a compatible hg38 database is also downloaded from GATK's Google Cloud Bucket.
+
+```bash
+wget https://console.cloud.google.com/storage/browser/_details/genomics-public-data/resources/broad/hg38/v0/Homo_sapiens_assembly38.dict?inv=1&invt=Ab0XXQ
+wget https://console.cloud.google.com/storage/browser/_details/genomics-public-data/resources/broad/hg38/v0/Homo_sapiens_assembly38.fasta?inv=1&invt=Ab0XXQ
+wget https://console.cloud.google.com/storage/browser/_details/genomics-public-data/resources/broad/hg38/v0/Homo_sapiens_assembly38.fasta.fai?inv=1&invt=Ab0XXQ
+```
+
+```bash
+bgzip resources_broad_hg38_v0_Homo_sapiens_assembly38.dbsnp138.vcf # this vcf file must be compressed for the BaseRecalibrator tool to be able to use it
+
+# Index the files using the IndexFeatureFile tool
+singularity exec gatk_gatk:4.6.2.0 gatk IndexFeatureFile \
+> -I resources_broad_hg38_v0_Homo_sapiens_assembly38.dbsnp138.vcf.gz
+
+singularity exec gatk_gatk:4.6.2.0 gatk IndexFeatureFile \
+> -I Mills_and_1000G_gold_standard.indels.hg38.vcf
+
 mkdir GATK_Analysis
 mkdir GATK_Anlayis/BaseRecalibrator
 mkdir GATK_Anlayis/BaseRecalibrator/recal_data
+mkdir GATK_Anlayis/BaseRecalibrator/recal_bams
 ```
+
+Now, we proceed with BQSR, starting with the BaseRecalibrator tool
+
+```bash
+# Step 1: Generate the recalibration table
+for bam in Data/bams/*.bam; do 
+  samples=$(basename "$bam" .bam)
+
+  singularity exec gatk_4.6.2.0 gatk BaseRecalibrator \
+    -I "$bam" \
+    -R resources_broad_hg38_v0_Homo_sapiens_assembly38.fasta \
+    --known-sites resources_broad_hg38_v0_Homo_sapiens_assembly38.dbsnp138.vcf.gz \
+    --known-sites Mills_and_1000G_gold_standard.indels.hg38.vcf \
+    -O "GATK_Anlayis/BaseRecalibrator/recal_data/${samples}.recal.table"
+done
+
+
+# Step 2: Apply the recalibration to the BAM file'
+for bam in Data/bams/*.bam; do 
+  sample=$(basename "$bam" .bam)
+
+  singularity exec gatk_4.6.2.0 gatk ApplyBQSR \
+    -I "$bam" \
+    -R resources_broad_hg38_v0_Homo_sapiens_assembly38.fasta \
+    --bqsr-recal-file "GATK_Anlayis/BaseRecalibrator/recal_data/${sample}.recal.table" \
+    -O "GATK_Anlayis/BaseRecalibrator/recal_bams/${sample}.recal.bam"
+done
+```
+
 ## Generate VCF Files
 
 
@@ -175,35 +231,15 @@ Summary pathogenicity thresholds applied.
 | **dbscSNV (splice)**    | `ada_score`, `rf_score`               | > 0.6 or > 0.8 often used                    | `ada_score > 0.6 and rf_score > 0.6`              |
 | **SpliceAI**            | `SpliceAI_DS_*`                       | Score > 0.5 recommended                      | `SpliceAI_DS_AG > 0.5 or SpliceAI_DS_AL > 0.5` etc. |
 
-Nominated candidate variants are saved in a txt file and compared in databases like VarSome, ClinVar, UniProt, and gnomAD browser.
+Nominated candidate variants are saved in a .tsv file and cross-checked in databases like VarSome, ClinVar, UniProt, and gnomAD browser.
+
+The ```extract_variants_summary.sh``` script is used to extract summary information about all nominated pathogenic variants.  
 
 ```bash
-bcftools query -f '%CHROM\t%POS\t%REF\t%ALT\t%INFO/CSQ\n' final_filtered.vcf.gz | awk -F '\t' '
-BEGIN {
-    OFS = "\t";
-    print "CHROM", "POS", "REF", "ALT", "rsid", "Consequence", "Impact", "Gene", "HGVSc", "HGVSp", "gnomADe_AF", "SIFT", "PolyPhen", "clinvar_clnsig", "CADD_PHRED"
-}
-{
-    split($5, transcripts, ",");
-    for (i in transcripts) {
-        split(transcripts[i], info, "|");
-        CHROM = $1;
-        POS = $2;
-        rsid = info[18];
-        REF = $3;
-        ALT = $4;
-        Consequence     = info[2];
-        Impact          = info[3];
-        Gene            = info[4]; HGVSc = info[11]; HGVSp = info[12]; gnomADe_AF = info[38];
-        SIFT            = info[34];
-        PolyPhen        = info[35];
-        clinvar_clnsig  = info[85]; CADD_PHRED = info[89];
-        print CHROM, POS, REF, ALT, rsid, Consequence, Impact, Gene, HGVSc, HGVSp, gnomADe_AF, SIFT, PolyPhen, clinvar_clnsig, CADD_PHRED;
-    }
-}' | uniq > gene_list.txt
+sh extract_variants_summary.sh
 ```
 
-This process can also be repeated using less stringent filters, such as a MAF of 5% instead of 1% and 0.3 for SpliceAI scores, etc. 
+This whole process can also be repeated using less stringent filters, such as a MAF of 5% instead of 1% and 0.3 for SpliceAI scores, etc. 
 The annotation can also be streamlined by supplying the --pick or --flag_pick flag in ```annotation.sh``` to tell VEP to report only the most deleterious or clinically significant transcript.  
 
 
@@ -244,7 +280,7 @@ Summary information for nominated STR variants can be extracted from either the 
 ./summarize_C9ORF72.sh
 ```
 ### Inspecting the Read Alignments in Genomic Regions Containing Repeat Expansions
-The graph realigned reads output generated by ExpansionHunter can be further visualized in REViewer to  inspect the quality of the alignments of the reads used to genotype the repeat regions. REViewer was also developed by the authors of ExpansionHunter is a tool for visualizing alignments of reads in regions containing tandem repeats. 
+The graph realigned reads output generated by ExpansionHunter can be further visualized in [REViewer](https://github.com/Illumina/REViewer) to  inspect the quality of the alignments of the reads used to genotype the repeat regions. REViewer was also developed by the authors of ExpansionHunter is a tool for visualizing alignments of reads in regions containing tandem repeats. 
 
 REViewer requires:
 - the BAMlet with graph-realigned reads generated by ExpansionHunter
@@ -267,13 +303,7 @@ for bam in STR_analysis_results/*.bam; do
   samtools index "$sorted_bam"
 done
 ```
-Because of contig naming inconsitency with different reference genome databses, REViewer may return an error. To prevent this, a compatible hg38 database if downloaded from GATK's Google Cloud Bucket of [useful human genomic resources](https://console.cloud.google.com/storage/browser/genomics-public-data/resources/broad/hg38/v0/). 
 
-```bash
-wget https://console.cloud.google.com/storage/browser/_details/genomics-public-data/resources/broad/hg38/v0/Homo_sapiens_assembly38.dict?inv=1&invt=Ab0XXQ
-wget https://console.cloud.google.com/storage/browser/_details/genomics-public-data/resources/broad/hg38/v0/Homo_sapiens_assembly38.fasta?inv=1&invt=Ab0XXQ
-wget https://console.cloud.google.com/storage/browser/_details/genomics-public-data/resources/broad/hg38/v0/Homo_sapiens_assembly38.fasta.fai?inv=1&invt=Ab0XXQ
-```
 
 REViewer can then be run to generate .svg files, which can be viewed in a browser.
 ```bash
