@@ -202,7 +202,7 @@ Once the files are downloaded and ready, the consolidated vep annotation command
 
 Using the ```vep_filter``` function, the annotation output is subjected to rigorous filtering steps that systematically prioritizes candidate variants by retaining only rare, high-quality variants with strong predicted deleteriousness or clinical significance, based on standard thresholds for pathogenicity scores (including SIFT, PolyPhen, CADD, ClinVar, SpliceAI, and others), consequence, genotype quality, and population allele frequency (<1% and <5%).
 
-This is done using a SLURM job script. This pipeiline automatically uses the ```annotation.sh```,  ```consequence_filtering.sh```, ```pathogenicity_scoring.sh```, ```impact_MAF_pop_filtering.sh```, ```genotype_quality_filter.sh```, ```ftd_gene_filter.sh``` scripts to process the input VCF file.
+This is done using a SLURM job script, ```vep_varaint_annotation.sh```. This pipeiline automatically uses the ```annotation.sh```,  ```consequence_filtering.sh```, ```pathogenicity_scoring.sh```, ```impact_MAF_pop_filtering.sh```, ```genotype_quality_filter.sh```, ```ftd_gene_filter.sh``` scripts to process the input VCF file.
 
 The final output is a bgzipped and tabix-indexed VCF file containing candidate variants, which have also been filtered based on [known FTD genes](https://hpo.jax.org/browse/term/HP:0002145). 
 
